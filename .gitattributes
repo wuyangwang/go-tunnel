@@ -1,4 +1,4 @@
-# Normalize line endings in the repo; Go files must be LF for gofmt.
+﻿# Normalize line endings in the repo; Go files must be LF for gofmt.
 * text=auto
 *.go text eol=lf
 
@@ -8,3 +8,4 @@
 *.md text eol=lf
 *.yml text eol=lf
 *.yaml text eol=lf
+.gitattributes text eol=lf
