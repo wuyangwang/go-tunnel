@@ -1,0 +1,7 @@
+# Normalize line endings in the repo; Go files must be LF for gofmt.
+* text=auto
+*.go text eol=lf
+
+# Keep these binary / no-newline-normalization.
+*.pem text eol=lf
+*.sum text eol=lf
