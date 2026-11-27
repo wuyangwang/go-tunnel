@@ -13,6 +13,7 @@ ca-key.pem
 # build-time embedded certs (local self-contained builds only)
 /internal/tlsutil/embedded/*.pem
 
-# go
+# built artifacts
+/bin/
 *.test
 *.out
