@@ -166,19 +166,17 @@ HTTP 代理填 VPS 公网 IP，端口填 `4567`。HTTPS 抓包需在手机信任
 
 ## CI 与 Release 发布
 
-### CI — `.github/workflows/ci.yml`
+**一个工作流** `.github/workflows/workflow.yml`：**push 到 `master` 时触发**。
 
-每次 push / PR 自动执行：`go vet`、`gofmt` 检查、`go test ./...`；
-ubuntu / windows / macos 三平台；`-race`；交叉编译 server→linux(amd64/arm64)、client→windows(amd64/arm64)。
+- `test`（ubuntu/windows/macos 三平台：`go vet`、`gofmt` 检查、`go test ./...`、`go build`）；
+- `test-race`（`-race`）；
+- `release`：**`needs` 等 `test` + `test-race` 通过后**，自动发布。
+- 仅 `release` job 有 `contents: write`，其余 `contents: read`；无 `pull_request` 触发。
 
-### Release — `.github/workflows/release.yml`
-
-打 tag 即发布：`git tag v1.0.0 && git push origin v1.0.0`。
-
-工作流自动：测试 → `CGO_ENABLED=0` 交叉编译（linux/darwin/windows × amd64/arm64，共 6 平台）→
-`.zip`(Windows)/`.tar.gz` → `SHA256SUMS` → 用 GitHub CLI 创建 Release + 自动变更说明。
-
-产物命名：`gotunnel_<tag>_<os>_<arch>.(tar.gz|zip)`，含 `gotunnel-server` 与 `gotunnel-client`。
+**Release**：测试 → `CGO_ENABLED=0` 交叉编译（linux/darwin/windows × amd64/arm64，共 6 平台）→
+`.zip`(Windows)/`.tar.gz` → `SHA256SUMS` → 自动生成版本 tag `v0.0.${GITHUB_RUN_NUMBER}`
+并 `gh release create ... --target ${GITHUB_SHA}` + 自动变更说明。**每次 push master 都会发布**，无需手动打 tag。
+产物命名：`gotunnel_v0.0.N_<os>_<arch>.(tar.gz|zip)`，含 `gotunnel-server` 与 `gotunnel-client`。
 **发布产物不内嵌任何密钥。**
 
 ## 项目结构

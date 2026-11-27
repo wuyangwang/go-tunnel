@@ -1,16 +1,55 @@
-name: Release
+name: CI + Release
 
+# Trigger: push to master runs CI and, if CI passes, publishes a release.
+# No pull_request trigger; no untrusted fork PRs can run this workflow.
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [master]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Vet
+        run: go vet ./...
+      - name: Format check
+        shell: bash
+        run: test -z "$(gofmt -l .)"
+      - name: Test
+        run: go test ./... -count=1
+      - name: Build
+        run: go build ./...
+
+  test-race:
+    name: test (race)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Test with race detector
+        run: go test ./... -race -count=1
+
   release:
     name: release
+    needs: [test, test-race]
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,13 +67,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          VERSION="${GITHUB_REF_NAME}"
+          VERSION="v0.0.${GITHUB_RUN_NUMBER}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           DIST=dist
           mkdir -p "$DIST"
 
           # Two binaries per platform: gotunnel-server + gotunnel-client.
-          # Design targets: server on Linux, client on Windows; other
-          # platforms are provided for convenience.
+          # Server targets Linux; client targets Windows; others provided.
           build() {
             local goos=$1 goarch=$2 ext=$3
             local out="$DIST/gotunnel_${goos}_${goarch}"
@@ -75,7 +114,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          gh release create "${GITHUB_REF_NAME}" \
-            --title "${GITHUB_REF_NAME}" \
+          # Auto-generated version tag on the current commit; no need to push a tag first.
+          gh release create "$VERSION" \
+            --target "${GITHUB_SHA}" \
+            --title "$VERSION" \
             --generate-notes \
             dist/*.tar.gz dist/*.zip dist/SHA256SUMS
