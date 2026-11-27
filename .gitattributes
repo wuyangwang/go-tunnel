@@ -1,5 +1,5 @@
 # Normalize line endings in the repo; Go files must be LF for gofmt.
-* text=auto
+* text eol=lf
 *.go text eol=lf
 
 # Keep these LF as well.
