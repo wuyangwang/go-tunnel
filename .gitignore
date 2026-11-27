@@ -1,0 +1,18 @@
+# binaries
+/gotunnel-server
+/gotunnel-client
+/gotunnel-client.exe
+*.exe
+/dist/
+
+# generated TLS material (never commit private keys)
+/certs/
+ca-key.pem
+*-key.pem
+!*-key.pem.example
+# build-time embedded certs (local self-contained builds only)
+/internal/tlsutil/embedded/*.pem
+
+# go
+*.test
+*.out

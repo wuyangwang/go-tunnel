@@ -1,0 +1,81 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        run: go test ./... -count=1
+
+      - name: Build and package
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME}"
+          DIST=dist
+          mkdir -p "$DIST"
+
+          # Two binaries per platform: gotunnel-server + gotunnel-client.
+          # Design targets: server on Linux, client on Windows; other
+          # platforms are provided for convenience.
+          build() {
+            local goos=$1 goarch=$2 ext=$3
+            local out="$DIST/gotunnel_${goos}_${goarch}"
+            mkdir -p "$out"
+            CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch \
+              go build -trimpath -ldflags="-s -w" -o "$out/gotunnel-server$ext" ./cmd/server
+            CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch \
+              go build -trimpath -ldflags="-s -w" -o "$out/gotunnel-client$ext" ./cmd/client
+          }
+
+          build linux   amd64 ""
+          build linux   arm64 ""
+          build darwin  amd64 ""
+          build darwin  arm64 ""
+          build windows amd64 ".exe"
+          build windows arm64 ".exe"
+
+          # Package: zip for Windows, tar.gz otherwise.
+          cd "$DIST"
+          for dir in gotunnel_*/; do
+            dir="${dir%/}"
+            name="gotunnel_${VERSION}_${dir#gotunnel_}"
+            cp ../README.md "$dir/README.md" 2>/dev/null || true
+            if [[ "$dir" == *windows* ]]; then
+              (cd "$dir" && zip -q -r "../$name.zip" .)
+            else
+              tar -czf "$name.tar.gz" -C "$dir" .
+            fi
+          done
+          cd ..
+
+          # Checksums.
+          (cd "$DIST" && sha256sum *.tar.gz *.zip > SHA256SUMS)
+
+      - name: Publish GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            dist/*.tar.gz dist/*.zip dist/SHA256SUMS

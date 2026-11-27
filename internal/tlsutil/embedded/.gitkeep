@@ -1,0 +1,4 @@
+# Build-time embedded certificates go here (generated *.pem).
+# Generate with: go run ./cmd/gencerts -dir internal/tlsutil/embedded
+# Files matching *.pem in this directory are NOT committed (see .gitignore)
+# and are embedded into binaries built afterwards via go:embed.
