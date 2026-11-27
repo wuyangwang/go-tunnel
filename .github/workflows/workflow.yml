@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -45,8 +45,8 @@ jobs:
       - name: Test with race detector
         run: go test ./... -race -count=1
 
-  release-server:
-    name: release server
+  release:
+    name: release
     needs: [test, test-race]
     permissions:
       contents: write
@@ -63,75 +63,29 @@ jobs:
       - name: Test
         run: go test ./... -count=1
 
-      - name: Build standalone server binaries
+      - name: Build standalone binaries
         shell: bash
         run: |
           set -euo pipefail
-          VERSION="server-v0.0.${GITHUB_RUN_NUMBER}"
+          VERSION="v0.0.${GITHUB_RUN_NUMBER}"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           DIST=dist
           mkdir -p "$DIST"
 
-          # Raw standalone binary per platform, suffixed <os>_<arch>.
-          for target in "linux amd64" "linux arm64" "darwin amd64" "darwin arm64" "windows amd64 .exe" "windows arm64 .exe"; do
+          # Raw standalone binaries per platform, both server and client.
+          # Targets: linux/amd64 + windows/amd64 (no macOS, no arm64).
+          for target in "linux amd64" "windows amd64 .exe"; do
             set -- $target
             goos=$1; goarch=$2; ext=${3:-}
             CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch \
               go build -trimpath -ldflags="-s -w" -o "$DIST/gotunnel-server_${goos}_${goarch}${ext}" ./cmd/server
-          done
-
-          (cd "$DIST" && sha256sum gotunnel-server* > SHA256SUMS)
-
-      - name: Publish server Release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          gh release create "$VERSION" \
-            --target "${GITHUB_SHA}" \
-            --title "$VERSION" \
-            --generate-notes \
-            dist/gotunnel-server* dist/SHA256SUMS
-
-  release-client:
-    name: release client
-    needs: [test, test-race]
-    permissions:
-      contents: write
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Test
-        run: go test ./... -count=1
-
-      - name: Build standalone client binaries
-        shell: bash
-        run: |
-          set -euo pipefail
-          VERSION="client-v0.0.${GITHUB_RUN_NUMBER}"
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-          DIST=dist
-          mkdir -p "$DIST"
-
-          # Raw standalone binary per platform, suffixed <os>_<arch>.
-          for target in "linux amd64" "linux arm64" "darwin amd64" "darwin arm64" "windows amd64 .exe" "windows arm64 .exe"; do
-            set -- $target
-            goos=$1; goarch=$2; ext=${3:-}
             CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch \
               go build -trimpath -ldflags="-s -w" -o "$DIST/gotunnel-client_${goos}_${goarch}${ext}" ./cmd/client
           done
 
-          (cd "$DIST" && sha256sum gotunnel-client* > SHA256SUMS)
+          (cd "$DIST" && sha256sum gotunnel-* > SHA256SUMS)
 
-      - name: Publish client Release
+      - name: Publish GitHub Release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -141,4 +95,4 @@ jobs:
             --target "${GITHUB_SHA}" \
             --title "$VERSION" \
             --generate-notes \
-            dist/gotunnel-client* dist/SHA256SUMS
+            dist/gotunnel-* dist/SHA256SUMS

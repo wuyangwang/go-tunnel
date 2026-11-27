@@ -168,19 +168,27 @@ HTTP 代理填 VPS 公网 IP，端口填 `4567`。HTTPS 抓包需在手机信任
 
 **一个工作流** `.github/workflows/workflow.yml`：**push 到 `master` 时触发**。
 
-- `test`（ubuntu/windows/macos 三平台：`go vet`、`gofmt` 检查、`go test ./...`、`go build`）；
+- `test`（ubuntu / windows：`go vet`、`gofmt` 检查、`go test ./...`、`go build`）；
 - `test-race`（`-race`）；
-- **server 与 client 分开发布**：`release-server` + `release-client` 两个 job，
-  都 **`needs` 等 `test` + `test-race` 通过后**自动发布。
-- 仅 `release-*` job 有 `contents: write`，其余 `contents: read`；无 `pull_request` 触发。
+- `release`：**`needs` 等 `test` + `test-race` 通过后**自动发布。
+- 仅 `release` job 有 `contents: write`，其余 `contents: read`；无 `pull_request` 触发。
 
-**Release**：测试 → `CGO_ENABLED=0` 交叉编译（linux/darwin/windows × amd64/arm64，共 6 平台）→
-**裸二进制（不打 tar.gz/zip）** → 各自 `SHA256SUMS` → **两个独立 GitHub Release**。
-**GitHub Release tag 必须唯一**，故 server `server-v0.0.N`、client `client-v0.0.N`
-（同一个 `N = ${GITHUB_RUN_NUMBER}`），`gh release create ... --target ${GITHUB_SHA}` +
-自动变更说明。**每次 push master 都会发布两个 Release**，无需手动打 tag。
-产物命名：`gotunnel-server_<os>_<arch>[.exe]`、`gotunnel-client_<os>_<arch>[.exe]`
-（Windows 带 `.exe`，每个 Release 只含自己那半）。**发布产物不内嵌任何密钥。**
+**Release**：测试 → `CGO_ENABLED=0` 交叉编译 **linux/amd64 + windows/amd64**（不考虑 macOS / arm64）
+→ 生成 `SHA256SUMS` → **一个 GitHub Release**。
+tag 自动为 `v0.0.${GITHUB_RUN_NUMBER}`，`gh release create ... --target ${GITHUB_SHA}` + 自动变更说明。
+**每次 push master 都会发布**，无需手动打 tag。
+
+**产物是一个 Release 里的 4 个独立文件（不打 tar.gz/zip，不打包）：**
+
+```text
+gotunnel-server_linux_amd64
+gotunnel-client_linux_amd64
+gotunnel-server_windows_amd64.exe
+gotunnel-client_windows_amd64.exe
+SHA256SUMS
+```
+
+**发布产物不内嵌任何密钥。**
 
 ## 项目结构
 
