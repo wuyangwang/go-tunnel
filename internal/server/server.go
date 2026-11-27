@@ -18,10 +18,13 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/hashicorp/yamux"
 
+	"gotunnel/internal/logutil"
 	"gotunnel/internal/protocol"
+	"gotunnel/internal/proxy"
 	"gotunnel/internal/tunnel"
 )
 
@@ -55,6 +58,7 @@ type Server struct {
 	sess   *session
 	conns  sync.Map // net.Conn -> struct{}, all open connections
 	closed atomic.Bool
+	warns  *logutil.RateLimiter
 }
 
 // session is one connected, authenticated GoTunnel client.
@@ -73,7 +77,7 @@ func New(opts Options) *Server {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Server{opts: opts, log: log}
+	return &Server{opts: opts, log: log, warns: logutil.New(30 * time.Second)}
 }
 
 // Listen binds the listener. Use Addr to discover the bound address.
@@ -191,7 +195,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 func (s *Server) handleTunnelClient(ctx context.Context, conn net.Conn) {
 	tconn := tls.Server(conn, s.opts.TLSConfig)
 	if err := tconn.HandshakeContext(ctx); err != nil {
-		s.log.Warn("tunnel client TLS handshake failed", "remote", conn.RemoteAddr(), "err", err)
+		s.warns.Record(s.log, "tunnel client TLS handshake failed", "remote", conn.RemoteAddr(), "err", err)
 		return
 	}
 	defer tconn.Close()
@@ -200,7 +204,7 @@ func (s *Server) handleTunnelClient(ctx context.Context, conn net.Conn) {
 
 	req, err := protocol.ReadAuth(tconn)
 	if err != nil {
-		s.log.Warn("auth read failed", "remote", remote, "err", err)
+		s.warns.Record(s.log, "auth read failed", "remote", remote, "err", err)
 		_ = protocol.WriteAuthResult(tconn, false, "malformed auth request")
 		return
 	}
@@ -209,7 +213,7 @@ func (s *Server) handleTunnelClient(ctx context.Context, conn net.Conn) {
 		return
 	}
 	if s.opts.Token != "" && subtle.ConstantTimeCompare([]byte(req.Token), []byte(s.opts.Token)) != 1 {
-		s.log.Warn("auth rejected", "remote", remote)
+		s.warns.Record(s.log, "auth rejected", "remote", remote)
 		_ = protocol.WriteAuthResult(tconn, false, "invalid token")
 		return
 	}
@@ -221,7 +225,7 @@ func (s *Server) handleTunnelClient(ctx context.Context, conn net.Conn) {
 	cfg.LogOutput = io.Discard
 	ysess, err := yamux.Server(tconn, cfg)
 	if err != nil {
-		s.log.Warn("yamux server failed", "remote", remote, "err", err)
+		s.warns.Record(s.log, "yamux server failed", "remote", remote, "err", err)
 		return
 	}
 
@@ -245,7 +249,7 @@ func (s *Server) handleTunnelClient(ctx context.Context, conn net.Conn) {
 func (s *Server) handleProxyConn(conn net.Conn) {
 	sess := s.currentSession()
 	if sess == nil {
-		s.log.Warn("proxy connection dropped: no client session", "remote", conn.RemoteAddr())
+		s.serveDirect(conn)
 		return
 	}
 
@@ -253,7 +257,7 @@ func (s *Server) handleProxyConn(conn net.Conn) {
 	// Reserve a slot atomically before opening the stream.
 	if n := sess.streams.Add(1); int(n) > s.opts.MaxStreams {
 		sess.streams.Add(-1)
-		s.log.Warn("proxy connection dropped: per-session stream limit reached",
+		s.warns.Record(s.log, "proxy connection dropped: per-session stream limit reached",
 			"remote", conn.RemoteAddr(), "max", s.opts.MaxStreams)
 		return
 	}
@@ -261,7 +265,8 @@ func (s *Server) handleProxyConn(conn net.Conn) {
 	stream, err := sess.yamux.Open()
 	if err != nil {
 		sess.streams.Add(-1)
-		s.log.Warn("open stream failed", "err", err)
+		s.warns.Record(s.log, "open stream failed", "err", err)
+		s.serveDirect(conn)
 		return
 	}
 	defer func() {
@@ -271,6 +276,25 @@ func (s *Server) handleProxyConn(conn net.Conn) {
 
 	defer conn.Close()
 	tunnel.Bidirectional(conn, stream)
+}
+
+// serveDirect keeps proxy clients working when no GoTunnel client is
+// connected. It is gated by the shared token via HTTP Basic proxy auth;
+// without a token the server refuses to act as an open proxy.
+func (s *Server) serveDirect(conn net.Conn) {
+	if s.opts.Token == "" {
+		s.warns.Record(s.log, "proxy connection dropped: no client session and no token (refusing open proxy)",
+			"remote", conn.RemoteAddr())
+		return
+	}
+	s.warns.Record(s.log, "no client session, proxying directly from server",
+		"remote", conn.RemoteAddr())
+	proxy.ServeDirect(conn, proxy.Options{
+		DialTimeout: 10 * time.Second,
+		Authorize:   proxy.AuthorizeBasicToken(s.opts.Token),
+		Logger:      s.log,
+		Warns:       s.warns,
+	})
 }
 
 func (s *Server) setSession(sess *session) {

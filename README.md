@@ -164,6 +164,27 @@ gotunnel-client.exe -server YOUR_VPS_IP:4567 -port 9000   # Charles 改用 9000
 HTTP 代理填 VPS 公网 IP，端口填 `4567`。HTTPS 抓包需在手机信任 Charles 根证书，
 且目标 App 允许代理解密。
 
+**手机代理认证（重要）**：server 必须配置 `-token`（或 `GOTUNNEL_TOKEN`）。手机 Wi-Fi 代理的
+**用户名任意填（如 `gotunnel`），密码填和 server 相同的 token**。这是为了让 server 在没有
+client 会话时仍能代手机上网，同时**不把 VPS 变成公开代理**。不配 token 时 server 会拒绝
+无 client 会话的请求（不会裸开代理）。
+
+### 降级行为：client / Charles 不启动手机也能上网
+
+链路按可用性自动降级，**手机侧无需改任何配置**：
+
+| 状态 | 流量走向 | 能否抓包 |
+|---|---|---|
+| client + Charles 都运行 | 手机 → VPS → 隧道 → PC Charles | 能 |
+| client 运行、Charles 没启动 | client 按 HTTP 代理协议直连目标，流量从 **PC** 出口 | 不能 |
+| client 没启动 | server 按 HTTP 代理协议直连目标，流量从 **VPS** 出口 | 不能 |
+
+- 后两种是 **fail-open 降级**：保证手机始终能访问接口，但**不会经过 Charles，抓不到包**。
+- 降级代理支持 HTTP 绝对地址请求和 HTTPS `CONNECT`（CONNECT 是纯 TCP 透传，不做解密）。
+- **server 降级必须带手机代理 Basic 认证**（密码 = `-token`），否则返回 `407`。这是防止 VPS
+  被当成公开代理滥用的必要措施；**不配 `-token` 时该降级被禁用**。
+- 认证失败/拨号失败的 WARN 已限频：首次立即打，30 秒汇总一次，不刷屏。
+
 ### 后台启动 / 停止 / 日志（两个二进制都支持）
 
 ```bash

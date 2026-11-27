@@ -1,11 +1,12 @@
 // Package client implements the GoTunnel client (PC side).
 //
-// The client dials out to the VPS (it never listens on any port, so
-// the local Charles proxy is not exposed publicly), establishes mutual
-// TLS + auth, then a yamux session, and for every accepted stream
-// connects to the local proxy (Charles) and forwards bidirectionally.
-// On disconnection it reconnects with backoff; requests in flight
-// during a disconnect are not preserved.
+// The client dials out to the VPS (it never listens on any port), sets up
+// mutual TLS + auth, then a yamux session. For each stream it prefers the
+// local Charles proxy (127.0.0.1:8890) so traffic can be captured. If the
+// local proxy cannot be reached, it falls back to acting as a minimal
+// HTTP proxy itself and dials the requested target directly, so the
+// phone keeps working even when Charles is not running (that traffic is
+// not captured and egresses from the PC).
 package client
 
 import (
@@ -15,14 +16,17 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"sync"
 	"time"
 
 	"github.com/hashicorp/yamux"
 
+	"gotunnel/internal/logutil"
 	"gotunnel/internal/protocol"
+	"gotunnel/internal/proxy"
 	"gotunnel/internal/tunnel"
 )
+
+const dialFailedMsg = "local proxy dial failed"
 
 // Options configures the client.
 type Options struct {
@@ -36,7 +40,7 @@ type Options struct {
 	Token string
 	// ReconnectDelay between reconnect attempts. Default 1s.
 	ReconnectDelay time.Duration
-	// DialTimeout for dialing server and local proxy. Default 5s.
+	// DialTimeout for dialing server, local proxy and direct targets. Default 5s.
 	DialTimeout time.Duration
 	// Logger; nil uses slog.Default().
 	Logger *slog.Logger
@@ -54,10 +58,10 @@ func Run(ctx context.Context, opts Options) error {
 	if log == nil {
 		log = slog.Default()
 	}
-	failures := &failureLogger{interval: 30 * time.Second}
+	warns := logutil.New(30 * time.Second)
 
 	for {
-		err := runOnce(ctx, opts, log, failures)
+		err := runOnce(ctx, opts, log, warns)
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -77,9 +81,9 @@ func Run(ctx context.Context, opts Options) error {
 	}
 }
 
-// runOnce establishes one TLS + yamux session and serves streams
-// until the session dies or ctx is cancelled.
-func runOnce(ctx context.Context, opts Options, log *slog.Logger, failures *failureLogger) error {
+// runOnce establishes one TLS + yamux session and serves streams until
+// the session dies or ctx is cancelled.
+func runOnce(ctx context.Context, opts Options, log *slog.Logger, warns *logutil.RateLimiter) error {
 	dialer := net.Dialer{Timeout: opts.DialTimeout}
 	raw, err := dialer.DialContext(ctx, "tcp", opts.ServerAddr)
 	if err != nil {
@@ -125,7 +129,6 @@ func runOnce(ctx context.Context, opts Options, log *slog.Logger, failures *fail
 
 	log.Info("connected to server", "server", opts.ServerAddr, "local", opts.LocalAddr)
 
-	// Cancelled context tears down the session.
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
@@ -141,60 +144,28 @@ func runOnce(ctx context.Context, opts Options, log *slog.Logger, failures *fail
 		if err != nil {
 			return err
 		}
-		go serveStream(stream, opts, log, failures)
+		go serveStream(stream, opts, log, warns)
 	}
 }
 
-// serveStream connects to the local proxy and pipes the stream.
-func serveStream(stream net.Conn, opts Options, log *slog.Logger, failures *failureLogger) {
+// serveStream prefers the local proxy and falls back to direct proxying.
+func serveStream(stream net.Conn, opts Options, log *slog.Logger, warns *logutil.RateLimiter) {
 	defer stream.Close()
 	local, err := net.DialTimeout("tcp", opts.LocalAddr, opts.DialTimeout)
-	if err != nil {
-		failures.record(log, opts.LocalAddr, err)
+	if err == nil {
+		if warns.Reset(dialFailedMsg) {
+			log.Info("local proxy available again", "local", opts.LocalAddr)
+		}
+		defer local.Close()
+		tunnel.Bidirectional(stream, local)
 		return
 	}
-	failures.recovered(log, opts.LocalAddr)
-	defer local.Close()
-	tunnel.Bidirectional(stream, local)
-}
-
-// failureLogger rate-limits repeated local-proxy dial errors so a phone
-// retrying rapidly cannot flood the log. First failure logs immediately;
-// further ones are counted and summarized at most once per interval.
-type failureLogger struct {
-	mu       sync.Mutex
-	last     time.Time
-	pending  int
-	interval time.Duration
-}
-
-func (f *failureLogger) record(log *slog.Logger, local string, err error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.pending++
-	now := time.Now()
-	if !f.last.IsZero() && now.Sub(f.last) < f.interval {
-		return
-	}
-	suppressed := f.pending - 1
-	f.pending = 0
-	f.last = now
-	if suppressed > 0 {
-		log.Warn("local proxy dial failed", "local", local, "err", err, "suppressed", suppressed)
-		return
-	}
-	log.Warn("local proxy dial failed", "local", local, "err", err)
-}
-
-func (f *failureLogger) recovered(log *slog.Logger, local string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.pending == 0 {
-		return
-	}
-	f.pending = 0
-	f.last = time.Time{}
-	log.Info("local proxy available again", "local", local)
+	warns.Record(log, dialFailedMsg, "local", opts.LocalAddr, "err", err)
+	proxy.ServeDirect(stream, proxy.Options{
+		DialTimeout: opts.DialTimeout,
+		Logger:      log,
+		Warns:       warns,
+	})
 }
 
 // AuthError is returned when the server rejects authentication.

@@ -1,12 +1,15 @@
 package server_test
 
 import (
+	"bufio"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -161,6 +164,75 @@ func roundTrip(serverAddr string, payload []byte) error {
 		return fmt.Errorf("got %q want %q", got, payload)
 	}
 	return nil
+}
+
+func TestProxyFallbackWithoutClient(t *testing.T) {
+	dir := t.TempDir()
+	if err := tlsutil.Generate(dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	sTLS, err := tlsutil.LoadServerConfig(dir+"/server.pem", dir+"/server-key.pem", dir+"/ca.pem")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A local target standing in for the public internet.
+	target, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.Close()
+	go func() {
+		c, e := target.Accept()
+		if e != nil {
+			return
+		}
+		defer c.Close()
+		r := bufio.NewReader(c)
+		_, _ = r.ReadString('\n')
+		for {
+			l, _ := r.ReadString('\n')
+			if l == "\r\n" || l == "\n" {
+				break
+			}
+		}
+		_, _ = io.WriteString(c, "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nfrom-server-fallback")
+	}()
+
+	srv := server.New(server.Options{
+		ListenAddr: "127.0.0.1:0",
+		TLSConfig:  sTLS,
+		Token:      "s3cret",
+		Logger:     discardLogger(),
+	})
+	if err := srv.Listen(); err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = srv.Serve(ctx) }()
+
+	auth := "Basic " + base64.StdEncoding.EncodeToString([]byte("user:s3cret"))
+	conn, err := net.Dial("tcp", srv.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	req := "GET http://" + target.Addr().String() + "/ HTTP/1.1\r\n" +
+		"Host: " + target.Addr().String() + "\r\n" +
+		"Proxy-Authorization: " + auth + "\r\n\r\n"
+	if _, err := io.WriteString(conn, req); err != nil {
+		t.Fatal(err)
+	}
+	line, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(line, "200") {
+		t.Fatalf("expected direct fallback 200, got %q", line)
+	}
 }
 
 func TestMaxStreamsPerSession(t *testing.T) {
