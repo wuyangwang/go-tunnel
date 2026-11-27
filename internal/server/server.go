@@ -142,6 +142,13 @@ func (s *Server) Serve(ctx context.Context) error {
 	}
 }
 
+// HasSession reports whether an authorized client session is active.
+func (s *Server) HasSession() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sess != nil
+}
+
 // Close stops the listener, drops the active session, and closes all
 // open connections.
 func (s *Server) Close() error {
@@ -279,19 +286,15 @@ func (s *Server) handleProxyConn(conn net.Conn) {
 }
 
 // serveDirect keeps proxy clients working when no GoTunnel client is
-// connected. It is gated by the shared token via HTTP Basic proxy auth;
-// without a token the server refuses to act as an open proxy.
+// connected. It deliberately does not authenticate phone requests:
+// stock Android Wi-Fi proxy settings have no proxy-auth fields.
+// WARNING: this makes the server an open HTTP proxy while no client is
+// connected. Anyone able to reach the port can use it.
 func (s *Server) serveDirect(conn net.Conn) {
-	if s.opts.Token == "" {
-		s.warns.Record(s.log, "proxy connection dropped: no client session and no token (refusing open proxy)",
-			"remote", conn.RemoteAddr())
-		return
-	}
-	s.warns.Record(s.log, "no client session, proxying directly from server",
+	s.warns.Record(s.log, "no client session, proxying directly from server (open proxy)",
 		"remote", conn.RemoteAddr())
 	proxy.ServeDirect(conn, proxy.Options{
 		DialTimeout: 10 * time.Second,
-		Authorize:   proxy.AuthorizeBasicToken(s.opts.Token),
 		Logger:      s.log,
 		Warns:       s.warns,
 	})

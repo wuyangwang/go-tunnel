@@ -277,30 +277,29 @@ func TestMaxStreamsPerSession(t *testing.T) {
 		})
 	}()
 
-	// phone1 proves session readiness AND holds the single stream slot
-	// open. Retry transient drops while the client session comes up;
-	// there is no separate warmup consuming the slot.
-	p1 := []byte("one")
-	got := make([]byte, len(p1))
-	var phone1 net.Conn
-	for deadline := time.Now().Add(5 * time.Second); ; {
-		c, err := net.Dial("tcp", serverAddr)
-		if err == nil {
-			_ = c.SetDeadline(time.Now().Add(5 * time.Second))
-			if _, err = c.Write(p1); err == nil {
-				if _, err = io.ReadFull(c, got); err == nil && string(got) == string(p1) {
-					phone1 = c
-					break
-				}
-			}
-			c.Close()
-		}
+	// Wait for the authorized client session (no proxy traffic needed).
+	for deadline := time.Now().Add(5 * time.Second); !srv.HasSession(); {
 		if time.Now().After(deadline) {
-			t.Fatalf("phone1 never got echo (session/slot): %v", err)
+			t.Fatal("client session never became ready")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+
+	// phone1 holds the only stream slot open.
+	p1 := []byte("one")
+	phone1, err := net.Dial("tcp", serverAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer phone1.Close()
+	_ = phone1.SetDeadline(time.Now().Add(5 * time.Second))
+	if _, err := phone1.Write(p1); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, len(p1))
+	if _, err := io.ReadFull(phone1, got); err != nil {
+		t.Fatal(err)
+	}
 
 	// With the single stream slot taken, a second proxy connection is dropped.
 	phone2, err := net.Dial("tcp", serverAddr)
