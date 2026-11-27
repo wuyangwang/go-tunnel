@@ -2,6 +2,9 @@
 * text=auto
 *.go text eol=lf
 
-# Keep these binary / no-newline-normalization.
+# Keep these LF as well.
 *.pem text eol=lf
 *.sum text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
