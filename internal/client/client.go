@@ -15,6 +15,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/hashicorp/yamux"
@@ -53,9 +54,10 @@ func Run(ctx context.Context, opts Options) error {
 	if log == nil {
 		log = slog.Default()
 	}
+	failures := &failureLogger{interval: 30 * time.Second}
 
 	for {
-		err := runOnce(ctx, opts, log)
+		err := runOnce(ctx, opts, log, failures)
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -77,7 +79,7 @@ func Run(ctx context.Context, opts Options) error {
 
 // runOnce establishes one TLS + yamux session and serves streams
 // until the session dies or ctx is cancelled.
-func runOnce(ctx context.Context, opts Options, log *slog.Logger) error {
+func runOnce(ctx context.Context, opts Options, log *slog.Logger, failures *failureLogger) error {
 	dialer := net.Dialer{Timeout: opts.DialTimeout}
 	raw, err := dialer.DialContext(ctx, "tcp", opts.ServerAddr)
 	if err != nil {
@@ -139,20 +141,60 @@ func runOnce(ctx context.Context, opts Options, log *slog.Logger) error {
 		if err != nil {
 			return err
 		}
-		go serveStream(stream, opts, log)
+		go serveStream(stream, opts, log, failures)
 	}
 }
 
 // serveStream connects to the local proxy and pipes the stream.
-func serveStream(stream net.Conn, opts Options, log *slog.Logger) {
+func serveStream(stream net.Conn, opts Options, log *slog.Logger, failures *failureLogger) {
 	defer stream.Close()
 	local, err := net.DialTimeout("tcp", opts.LocalAddr, opts.DialTimeout)
 	if err != nil {
-		log.Warn("local proxy dial failed", "local", opts.LocalAddr, "err", err)
+		failures.record(log, opts.LocalAddr, err)
 		return
 	}
+	failures.recovered(log, opts.LocalAddr)
 	defer local.Close()
 	tunnel.Bidirectional(stream, local)
+}
+
+// failureLogger rate-limits repeated local-proxy dial errors so a phone
+// retrying rapidly cannot flood the log. First failure logs immediately;
+// further ones are counted and summarized at most once per interval.
+type failureLogger struct {
+	mu       sync.Mutex
+	last     time.Time
+	pending  int
+	interval time.Duration
+}
+
+func (f *failureLogger) record(log *slog.Logger, local string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pending++
+	now := time.Now()
+	if !f.last.IsZero() && now.Sub(f.last) < f.interval {
+		return
+	}
+	suppressed := f.pending - 1
+	f.pending = 0
+	f.last = now
+	if suppressed > 0 {
+		log.Warn("local proxy dial failed", "local", local, "err", err, "suppressed", suppressed)
+		return
+	}
+	log.Warn("local proxy dial failed", "local", local, "err", err)
+}
+
+func (f *failureLogger) recovered(log *slog.Logger, local string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.pending == 0 {
+		return
+	}
+	f.pending = 0
+	f.last = time.Time{}
+	log.Info("local proxy available again", "local", local)
 }
 
 // AuthError is returned when the server rejects authentication.

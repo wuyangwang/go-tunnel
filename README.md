@@ -164,6 +164,29 @@ gotunnel-client.exe -server YOUR_VPS_IP:4567 -port 9000   # Charles 改用 9000
 HTTP 代理填 VPS 公网 IP，端口填 `4567`。HTTPS 抓包需在手机信任 Charles 根证书，
 且目标 App 允许代理解密。
 
+### 后台启动 / 停止 / 日志（两个二进制都支持）
+
+```bash
+gotunnel-server  start -token my-secret     # 后台运行，可带原有任意参数
+gotunnel-server  status
+gotunnel-server  log                         # 打印日志
+gotunnel-server  log -f                      # 实时跟随
+gotunnel-server  restart -token my-secret
+gotunnel-server  stop
+
+gotunnel-client.exe start -server YOUR_VPS_IP:4567 -token my-secret
+gotunnel-client.exe status
+gotunnel-client.exe log -f
+gotunnel-client.exe stop
+```
+
+- PID 与日志文件分别在 `~/.gotunnel/gotunnel-server.{pid,log}` 和
+  `~/.gotunnel/gotunnel-client.{pid,log}`，互不冲突。
+- Linux 用 `SIGTERM` 优雅停止；Windows 用强制终止（Go 程序在 Windows 上收不到 SIGTERM）。
+- `start` 会先把 stdout/stderr 追加到对应 log 文件，再脱离终端运行。
+- **本地代理拨号失败会限频**：首次立即记录，之后 30 秒汇总一次（带 `suppressed` 条数），
+  Charles 恢复时打一条 `local proxy available again`，避免手机重试刷屏。
+
 ## CI 与 Release 发布
 
 **一个工作流** `.github/workflows/workflow.yml`：**push 到 `master` 时触发**。

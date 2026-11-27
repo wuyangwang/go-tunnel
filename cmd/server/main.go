@@ -12,12 +12,24 @@ import (
 	"strings"
 	"syscall"
 
+	"gotunnel/internal/daemon"
 	"gotunnel/internal/protocol"
 	"gotunnel/internal/server"
 	"gotunnel/internal/tlsutil"
 )
 
 const certDir = "certs"
+
+func runDaemon(name, cmd string, args []string) {
+	m, err := daemon.New(name)
+	if err == nil {
+		err = m.Handle(cmd, args)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, name+":", err)
+		os.Exit(1)
+	}
+}
 
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -33,6 +45,10 @@ func main() {
 		initCerts  = flag.String("init-certs", "", "generate CA + server/client certificates into this directory and exit")
 		san        = flag.String("san", "", "extra comma-separated SANs (DNS names or IPs) for generated server certificate")
 	)
+	if len(os.Args) > 1 && daemon.IsCommand(os.Args[1]) {
+		runDaemon("gotunnel-server", os.Args[1], os.Args[2:])
+		return
+	}
 	flag.Parse()
 
 	if *initCerts != "" {

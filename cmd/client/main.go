@@ -13,11 +13,23 @@ import (
 	"time"
 
 	"gotunnel/internal/client"
+	"gotunnel/internal/daemon"
 	"gotunnel/internal/protocol"
 	"gotunnel/internal/tlsutil"
 )
 
 const certDir = "certs"
+
+func runDaemon(name, cmd string, args []string) {
+	m, err := daemon.New(name)
+	if err == nil {
+		err = m.Handle(cmd, args)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, name+":", err)
+		os.Exit(1)
+	}
+}
 
 func certFlagsSet() bool {
 	set := false
@@ -60,6 +72,10 @@ func main() {
 		reconnectDelay = flag.Duration("reconnect-delay", time.Second, "delay between reconnect attempts")
 		dialTimeout    = flag.Duration("dial-timeout", 5*time.Second, "dial timeout for server and local proxy")
 	)
+	if len(os.Args) > 1 && daemon.IsCommand(os.Args[1]) {
+		runDaemon("gotunnel-client", os.Args[1], os.Args[2:])
+		return
+	}
 	flag.Parse()
 
 	if *serverAddr == "" {
